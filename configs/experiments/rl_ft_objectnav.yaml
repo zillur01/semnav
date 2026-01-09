@@ -8,9 +8,9 @@ VIDEO_OPTION: []
 TENSORBOARD_DIR: "tb/evaluate_one_ckpt_multiple_seeds"
 VIDEO_DIR: "vidRLFT_Change_lr"
 TEST_EPISODE_COUNT: -1
-EVAL_CKPT_PATH_DIR: "data/checkpoints/semnav_bueno_rlft/ckpt.37.pth"
-NUM_ENVIRONMENTS: 4
-CHECKPOINT_FOLDER: "data/checkpoints/semnav_bueno_rlft/ckpt.37.pth"
+EVAL_CKPT_PATH_DIR: "data/checkpoints/RL_SemNav40cat.pth"
+NUM_ENVIRONMENTS: 1
+CHECKPOINT_FOLDER: "data/checkpoints/RL_SemNav40cat.pth"
 TRAINER_NAME: "semnav-ppo"
 SENSORS: ["RGB_SENSOR","SEMANTIC_SENSOR"]
 NUM_UPDATES: 3200000000

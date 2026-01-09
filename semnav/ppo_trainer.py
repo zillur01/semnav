@@ -762,7 +762,8 @@ class PIRLNavPPOTrainer(PPOTrainer):
                 config.freeze()
 
             if config.VERBOSE:
-                logger.info(f"env config: {config}")
+                pass
+                #logger.info(f"env config: {config}")
 
             self._init_envs(config)
 
@@ -855,11 +856,13 @@ class PIRLNavPPOTrainer(PPOTrainer):
 
             pbar = tqdm.tqdm(total=number_of_eval_episodes)
             self.actor_critic.eval()
+            steps_count = [0 for _ in range(self.envs.num_envs)]
             while (
                 len(stats_episodes) < number_of_eval_episodes
                 and self.envs.num_envs > 0
             ):
                 current_episodes = self.envs.current_episodes()
+                steps_count = [steps_count[i] + 1 for i in range(len(steps_count))]
 
                 with torch.no_grad():
                     (
@@ -889,6 +892,8 @@ class PIRLNavPPOTrainer(PPOTrainer):
                 else:
                     step_data = [a.item() for a in actions.to(device="cpu")]
 
+                if 0 in step_data:
+                    print("STOP action taken during evaluation")
                 outputs = self.envs.step(step_data)
 
                 observations, rewards_l, dones, infos = [
@@ -933,6 +938,8 @@ class PIRLNavPPOTrainer(PPOTrainer):
 
                     # episode ended
                     if not not_done_masks[i].item():
+                        print(f"Episode {current_episodes[i].episode_id} finished after {steps_count[i]}")
+                        steps_count[i] = 0
                         pbar.update()
                         episode_stats = {
                             "reward": current_episode_reward[i].item()

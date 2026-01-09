@@ -22,13 +22,13 @@ def main():
     parser.add_argument(
         "--run-type",
         choices=["train", "eval"],
-        required=True,
+        default="eval",
         help="run type of the experiment (train or eval)",
     )
     parser.add_argument(
         "--exp-config",
         type=str,
-        required=True,
+        default="configs/experiments/il_objectnav.yaml",
         help="path to config yaml containing info about experiment",
     )
     parser.add_argument(
@@ -113,6 +113,7 @@ def run_exp(exp_config: str, run_type: str, opts=None) -> None:
             world_rank = int(os.environ["OMPI_COMM_WORLD_RANK"])
         else:
             world_rank = 0
+        
         # print(f"local_rank: {local_rank}, global_rank: {global_rank}")
         if int(world_rank) == 0:  # multinode job
             wandb.init(project="semnav",
@@ -123,6 +124,7 @@ def run_exp(exp_config: str, run_type: str, opts=None) -> None:
                              tags=[f'{run_type}', 'dgx'],
                              id=config.WANDB_UNIQUE_ID,
                              resume="allow")
+    
     execute_exp(config, run_type)
 
 

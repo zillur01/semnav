@@ -1,6 +1,4 @@
-# Set up conda
-source ~/miniconda3/etc/profile.d/conda.sh
-
+#!/bin/bash
 # Create a conda environment
 conda create -n semnav python=3.9 cmake=3.14.0 -y
 conda activate semnav
