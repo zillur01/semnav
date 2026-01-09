@@ -63,7 +63,6 @@ from semnav.semnav_utils import UnifiedRoomTriggerSystem, DoorLandmarkTracker
 from semnav.semnav_utils import get_object_mask, decode_depth_image, filter_doors_with_depth, project_pixel_to_local_frame
 from doors_detection_long_term.scripts.doors_detector.detr_classify import detect_doors
 
-tracker = DoorLandmarkTracker()
 
 @baseline_registry.register_trainer(name="semnav-il")
 class ILEnvDDPTrainer(PPOTrainer):
@@ -556,6 +555,7 @@ class ILEnvDDPTrainer(PPOTrainer):
             steps_count = [0 for _ in range(self.envs.num_envs)]
             #image_history = [deque(maxlen=3) for _ in range(self.envs.num_envs)]
             prev_position = [observations[i]['gps'] for i in range(self.envs.num_envs)]
+            tracker_list = [DoorLandmarkTracker() for _ in range(self.envs.num_envs)]
             #distance_moved = [0.0 for _ in range(self.envs.num_envs)]
             while (
                 len(stats_episodes) < number_of_eval_episodes
@@ -600,7 +600,6 @@ class ILEnvDDPTrainer(PPOTrainer):
                 rgb_instrinsics = [info['rgb_instrinsics'] for info in infos]
                 depth_instrinsics = [info['depth_instrinsics'] for info in infos]
                 sensor_poses = [info['sensor_pose'] for info in infos]
-                tracker_list = [tracker for _ in range(self.envs.num_envs)]
                 # Remove extra non-scalar data from infos
                 for info in infos:
                     for k in list(info.keys()):

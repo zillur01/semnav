@@ -162,3 +162,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+data/scene_datasets/hm3d/train/00342-C6JvMamYTRg/C6JvMamYTRg.basis.navmesh
+data/videos/
+data/
+tb/
+wandb/
+CMakeCache.txt
