@@ -138,16 +138,24 @@ def project_pixel_to_local_frame(u, v, depth, intrinsics, robot_pose):
     intrinsics: Dictionary with 'fx', 'fy', 'cx', 'cy'
     robot_pose: Dictionary with 'x', 'y', 'yaw' (in radians)
     """
+    height = 480
+    width = 640
     # 1. Camera Intrinsics
     fx, fy = intrinsics['fx'], intrinsics['fy']
     cx, cy = intrinsics['cx'], intrinsics['cy']
 
     # 2. Project to 3D Camera Frame (Standard Pinhole Model)
     # Z is depth, X and Y are calculated based on similarity
-    z_cam = depth
-    x_cam = (u - cx) * z_cam / fx
-    y_cam = (v - cy) * z_cam / fy
+    #z_cam = depth
+    #x_cam = (u - cx) * z_cam / fx
+    #y_cam = (v - cy) * z_cam / fy
+    z = depth
+    x_ndc = (u / (width - 1)) * 2.0 - 1.0
+    y_ndc = 1.0 - (v / (height - 1)) * 2.0
 
+    x_cam = x_ndc * z / fx
+    y_cam = y_ndc * z / fy
+    z_cam = -z  # right-handed camera, −Z forward
     # 3. Transform to Robot Local Frame (Rotation then Translation)
     # Note: Camera usually has Z-forward, X-right.
     # Robot frames often use X-forward. Adjust based on your setup.
@@ -199,7 +207,7 @@ def filter_doors_with_depth(door_mask, depth_map, depth_threshold=4.0):
     blobs = []
     for i in range(1, num_labels):
         area = stats[i, cv2.CC_STAT_AREA]
-        if area < 8000: continue # Ignore tiny noise
+        if area < 10000: continue # Ignore tiny noise
         
         # Calculate median depth for this specific blob
         blob_depths = depth_map[labels == i]

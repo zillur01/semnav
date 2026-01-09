@@ -61,8 +61,20 @@ import matplotlib.pyplot as plt
 
 from semnav.semnav_utils import UnifiedRoomTriggerSystem, DoorLandmarkTracker
 from semnav.semnav_utils import get_object_mask, decode_depth_image, filter_doors_with_depth, project_pixel_to_local_frame
-from doors_detection_long_term.scripts.doors_detector.detr_classify import detect_doors
+#from doors_detection_long_term.scripts.doors_detector.detr_classify import detect_doors
 
+def build_intrinsic_matrix():
+    """Return depth-camera intrinsics for ScanNet or HM3D."""
+
+    hfov = 79 * np.pi / 180.0
+    fx = 1.0 / np.tan(hfov / 2.0)
+    fy = fx * (640.0 / 480.0)
+    return {
+        "fx": fx,
+        "fy": fy,
+        "cx": 1.0,
+        "cy": 1.0
+    }
 
 @baseline_registry.register_trainer(name="semnav-il")
 class ILEnvDDPTrainer(PPOTrainer):
@@ -597,9 +609,9 @@ class ILEnvDDPTrainer(PPOTrainer):
                 outputs = self.envs.step(step_data)
 
                 observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)]
-                rgb_instrinsics = [info['rgb_instrinsics'] for info in infos]
+                #rgb_instrinsics = [info['rgb_instrinsics'] for info in infos]
                 depth_instrinsics = [info['depth_instrinsics'] for info in infos]
-                sensor_poses = [info['sensor_pose'] for info in infos]
+                #sensor_poses = [info['sensor_pose'] for info in infos]
                 # Remove extra non-scalar data from infos
                 for info in infos:
                     for k in list(info.keys()):
@@ -645,36 +657,45 @@ class ILEnvDDPTrainer(PPOTrainer):
                     ) in stats_episodes:
                         envs_to_pause.append(i)
                     door_mask = get_object_mask(observations[i]['semantic'])
-                    plt.figure(1)
-                    plt.imshow(observations[i]['rgb'])
-                    plt.figure(2)
-                    plt.imshow(door_mask, cmap='gray')
                     depth_image = decode_depth_image(observations[i]['depth'], min_depth=0.5, max_depth=5.0)
-                    plt.figure(3)
-                    plt.imshow(depth_image, cmap='gray')
                     result_mask = filter_doors_with_depth(door_mask, depth_image)
-                    plt.figure(4)
+                    
+                    plt.figure(1, figsize=(10, 8))
+                    plt.subplot(2, 2, 1)
+                    plt.title('RGB Image')
+                    plt.imshow(observations[i]['rgb'])
+                    plt.axis('off')
+                    
+                    plt.subplot(2, 2, 2)
+                    plt.title('Door Mask')
+                    plt.imshow(door_mask, cmap='gray')
+                    plt.axis('off')
+                    
+                    plt.subplot(2, 2, 3)
+                    plt.title('Depth Image')
+                    plt.imshow(depth_image, cmap='gray')
+                    plt.axis('off')
+                    
+                    plt.subplot(2, 2, 4)
+                    plt.title('Result Mask')
                     plt.imshow(result_mask, cmap='gray')
-                    #plt.show()
+                    plt.axis('off')
+                                        
                     # Process frame in the tracker
-                    intinsics = {'fx': depth_instrinsics[i][0][0],
-                        'fy': depth_instrinsics[i][1][1],
-                        'cx': depth_instrinsics[i][0][2],
-                        'cy': depth_instrinsics[i][1][2]}
-                    robot_pose = {'x': observations[i]['gps'][0], 'y': observations[i]['gps'][1], 'yaw': observations[i]['compass']}
                     robot_traj = [observations[i]['gps'], prev_position[i]]
                     #door_image = detect_doors(observations[i]['rgb'])
                     #tracker.process_frame(result_mask, depth_image, intinsics, robot_pose, robot_traj)
                     
                     pillars = tracker_list[i].get_door_pillars(result_mask, depth_image)
                     if pillars:
-                        intinsics = {'fx': depth_instrinsics[i][0][0],
+                        intrinsics = {'fx': depth_instrinsics[i][0][0],
                                       'fy': depth_instrinsics[i][1][1],
                                       'cx': depth_instrinsics[i][0][2],
                                       'cy': depth_instrinsics[i][1][2]}
+                        intrinsics = build_intrinsic_matrix()
                         robot_pose = {'x': observations[i]['gps'][0], 'y': observations[i]['gps'][1], 'yaw': observations[i]['compass']}
-                        p_left_local = project_pixel_to_local_frame(*pillars[0], intinsics, robot_pose)
-                        p_right_local = project_pixel_to_local_frame(*pillars[1], intinsics, robot_pose)
+                        p_left_local = project_pixel_to_local_frame(*pillars[0], intrinsics, robot_pose)
+                        p_right_local = project_pixel_to_local_frame(*pillars[1], intrinsics, robot_pose)
 
                         if tracker_list[i].add_door_landmark(p_left_local, p_right_local):
                             print("New doorway registered in map.")
