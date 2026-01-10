@@ -16,9 +16,8 @@ class SimpleRLEnv(habitat.RLEnv):
 
     def step(self, *args, **kwargs):
         step_result = super().step(*args, **kwargs)
-        step_result[3]['rgb_instrinsics'] = self.get_camera_intrinsics('rgb')
-        step_result[3]['depth_instrinsics'] = self.get_camera_intrinsics('depth')
-        step_result[3]['sensor_pose'] = self._env.sim.get_agent(0).state.sensor_states
+        step_result[3]['states'] = self.get_sensor_pose()
+
         return step_result
 
     def get_reward_range(self):
@@ -36,6 +35,9 @@ class SimpleRLEnv(habitat.RLEnv):
 
     def get_info(self, observations):
         return self._env.get_metrics()
+    
+    def get_sensor_pose(self):
+        return self._env.sim.get_agent_state()
     
     def get_annotations(self):
         regions = self._env._sim.semantic_annotations().regions  # type: ignore

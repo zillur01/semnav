@@ -14,6 +14,7 @@ import wandb
 import numpy as np
 import torch
 import tqdm
+import quaternion
 import re
 from gym import spaces
 from habitat import Config, logger
@@ -59,22 +60,17 @@ import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 
-from semnav.semnav_utils import UnifiedRoomTriggerSystem, DoorLandmarkTracker
-from semnav.semnav_utils import get_object_mask, decode_depth_image, filter_doors_with_depth, project_pixel_to_local_frame
+from semnav.semnav_utils import DoorLandmarkTracker
+from semnav.semnav_utils import (
+    get_world_camera,
+    build_intrinsic_matrix,
+    get_object_mask, 
+    decode_depth_image, 
+    filter_doors_with_depth, 
+    project_pixel_to_local_frame
+)
+
 #from doors_detection_long_term.scripts.doors_detector.detr_classify import detect_doors
-
-def build_intrinsic_matrix():
-    """Return depth-camera intrinsics for ScanNet or HM3D."""
-
-    hfov = 79 * np.pi / 180.0
-    fx = 1.0 / np.tan(hfov / 2.0)
-    fy = fx * (640.0 / 480.0)
-    return {
-        "fx": fx,
-        "fy": fy,
-        "cx": 1.0,
-        "cy": 1.0
-    }
 
 @baseline_registry.register_trainer(name="semnav-il")
 class ILEnvDDPTrainer(PPOTrainer):
@@ -566,9 +562,7 @@ class ILEnvDDPTrainer(PPOTrainer):
             self.actor_critic.eval()
             steps_count = [0 for _ in range(self.envs.num_envs)]
             #image_history = [deque(maxlen=3) for _ in range(self.envs.num_envs)]
-            prev_position = [observations[i]['gps'] for i in range(self.envs.num_envs)]
             tracker_list = [DoorLandmarkTracker() for _ in range(self.envs.num_envs)]
-            #distance_moved = [0.0 for _ in range(self.envs.num_envs)]
             while (
                 len(stats_episodes) < number_of_eval_episodes
                 and self.envs.num_envs > 0):
@@ -609,15 +603,13 @@ class ILEnvDDPTrainer(PPOTrainer):
                 outputs = self.envs.step(step_data)
 
                 observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)]
-                #rgb_instrinsics = [info['rgb_instrinsics'] for info in infos]
-                depth_instrinsics = [info['depth_instrinsics'] for info in infos]
-                #sensor_poses = [info['sensor_pose'] for info in infos]
+                depth_rotations = [info['states'].sensor_states['depth'].rotation for info in infos]
+                depth_positions = [info['states'].sensor_states['depth'].position for info in infos]
+                agent_rotations = [info['states'].rotation for info in infos]
+                agent_positions = [info['states'].position for info in infos]
                 # Remove extra non-scalar data from infos
                 for info in infos:
-                    for k in list(info.keys()):
-                        v = info[k]
-                        if not (isinstance(v, (str, int, float)) or (isinstance(v, np.ndarray) and v.size == 1 and not isinstance(v, str))):
-                            del info[k]
+                    del info['states']
 
                 batch = batch_obs(  # type: ignore
                     observations,
@@ -659,8 +651,8 @@ class ILEnvDDPTrainer(PPOTrainer):
                     door_mask = get_object_mask(observations[i]['semantic'])
                     depth_image = decode_depth_image(observations[i]['depth'], min_depth=0.5, max_depth=5.0)
                     result_mask = filter_doors_with_depth(door_mask, depth_image)
-                    
-                    plt.figure(1, figsize=(10, 8))
+                    '''
+                    plt.figure(1, figsize=(8, 7))
                     plt.subplot(2, 2, 1)
                     plt.title('RGB Image')
                     plt.imshow(observations[i]['rgb'])
@@ -680,30 +672,24 @@ class ILEnvDDPTrainer(PPOTrainer):
                     plt.title('Result Mask')
                     plt.imshow(result_mask, cmap='gray')
                     plt.axis('off')
-                                        
+                    '''                
                     # Process frame in the tracker
-                    robot_traj = [observations[i]['gps'], prev_position[i]]
                     #door_image = detect_doors(observations[i]['rgb'])
-                    #tracker.process_frame(result_mask, depth_image, intinsics, robot_pose, robot_traj)
                     
                     pillars = tracker_list[i].get_door_pillars(result_mask, depth_image)
                     if pillars:
-                        intrinsics = {'fx': depth_instrinsics[i][0][0],
-                                      'fy': depth_instrinsics[i][1][1],
-                                      'cx': depth_instrinsics[i][0][2],
-                                      'cy': depth_instrinsics[i][1][2]}
-                        intrinsics = build_intrinsic_matrix()
-                        robot_pose = {'x': observations[i]['gps'][0], 'y': observations[i]['gps'][1], 'yaw': observations[i]['compass']}
-                        p_left_local = project_pixel_to_local_frame(*pillars[0], intrinsics, robot_pose)
-                        p_right_local = project_pixel_to_local_frame(*pillars[1], intrinsics, robot_pose)
+                        world_camera = get_world_camera(depth_rotations[i], depth_positions[i])
+                        p_left_local = project_pixel_to_local_frame(*pillars[0], world_camera)
+                        p_right_local = project_pixel_to_local_frame(*pillars[1], world_camera)
 
                         if tracker_list[i].add_door_landmark(p_left_local, p_right_local):
                             print("New doorway registered in map.")
-                    door_idx = tracker_list[i].check_door_crossing(robot_traj)
+                    door_idx = tracker_list[i].check_door_crossing(agent_positions[i])
                     if door_idx is not None:
                         print(f"Doorway {door_idx} crossed at step {steps_count[i]} in episode {current_episodes[i].episode_id}.")
-                    
-                    prev_position[i] = observations[i]['gps']
+                        batch['rgb'][i] =  torch.from_numpy(cv2.putText(batch['rgb'][i].cpu().numpy(), f'Doorway crossed!', (10,30),
+                                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2, cv2.LINE_AA)).to(self.device)
+                        
                     # episode ended
                     if not not_done_masks[i].item():
                         print(f"Current scene id: {current_episodes[i].scene_id}")
