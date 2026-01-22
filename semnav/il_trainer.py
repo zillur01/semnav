@@ -60,17 +60,7 @@ import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 
-from semnav.semnav_utils import DoorLandmarkTracker
-from semnav.semnav_utils import (
-    get_world_camera,
-    build_intrinsic_matrix,
-    get_object_mask, 
-    decode_depth_image, 
-    filter_doors_with_depth, 
-    project_pixel_to_local_frame
-)
-
-#from doors_detection_long_term.scripts.doors_detector.detr_classify import detect_doors
+from semnav.semnav_utils import DoorLandmarkTracker, RoomManager
 
 @baseline_registry.register_trainer(name="semnav-il")
 class ILEnvDDPTrainer(PPOTrainer):
@@ -563,6 +553,7 @@ class ILEnvDDPTrainer(PPOTrainer):
             steps_count = [0 for _ in range(self.envs.num_envs)]
             #image_history = [deque(maxlen=3) for _ in range(self.envs.num_envs)]
             tracker_list = [DoorLandmarkTracker() for _ in range(self.envs.num_envs)]
+            room_manager_list = [RoomManager() for _ in range(self.envs.num_envs)]
             while (
                 len(stats_episodes) < number_of_eval_episodes
                 and self.envs.num_envs > 0):
@@ -595,11 +586,8 @@ class ILEnvDDPTrainer(PPOTrainer):
                 else:
                     step_data = [a.item() for a in actions.to(device="cpu")]
 
-                if step_data[0] == 0:
-                    print("STOP action taken during evaluation")
                 if current_episodes[0].start_room:
                     print("New episode started")
-                
                 outputs = self.envs.step(step_data)
 
                 observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)]
@@ -648,9 +636,6 @@ class ILEnvDDPTrainer(PPOTrainer):
                         next_episodes[i].episode_id,
                     ) in stats_episodes:
                         envs_to_pause.append(i)
-                    door_mask = get_object_mask(observations[i]['semantic'])
-                    depth_image = decode_depth_image(observations[i]['depth'], min_depth=0.5, max_depth=5.0)
-                    result_mask = filter_doors_with_depth(door_mask, depth_image)
                     '''
                     plt.figure(1, figsize=(8, 7))
                     plt.subplot(2, 2, 1)
@@ -672,24 +657,12 @@ class ILEnvDDPTrainer(PPOTrainer):
                     plt.title('Result Mask')
                     plt.imshow(result_mask, cmap='gray')
                     plt.axis('off')
-                    '''               
-                    # Process frame in the tracker
-                    #door_image = detect_doors(observations[i]['rgb'])
-                    
-                    pillars = tracker_list[i].get_door_pillars(result_mask, depth_image)
-                    if pillars:
-                        world_camera = get_world_camera(depth_rotations[i], depth_positions[i])
-                        p_left_global = project_pixel_to_local_frame(*pillars[0], world_camera)
-                        p_right_global = project_pixel_to_local_frame(*pillars[1], world_camera)
-
-                        if tracker_list[i].add_door_landmark(p_left_global, p_right_global, agent_positions[i]):
-                            print("New doorway registered in map.")
-                    door_idx = tracker_list[i].check_door_crossing(agent_positions[i])
-                    if door_idx is not None:
-                        print(f"Doorway {door_idx} crossed at step {steps_count[i]} in episode {current_episodes[i].episode_id}.")
-                        batch['rgb'][i] =  torch.from_numpy(cv2.putText(batch['rgb'][i].cpu().numpy(), f'Doorway crossed!', (10,30),
-                                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2, cv2.LINE_AA)).to(self.device)
-                        
+                    '''  
+                    door_idx = tracker_list[i].detect_room_transition(observations[i]['semantic'], observations[i]['depth'],
+                                                                      depth_rotations[i], depth_positions[i], agent_positions[i])
+                    if door_idx:
+                        print("Doorway crossed")
+                    room_manager_list[i].update(agent_positions[i], observations[i]['semantic'], door_idx)          
                     # episode ended
                     if not not_done_masks[i].item():
                         print(f"Current scene id: {current_episodes[i].scene_id}")
