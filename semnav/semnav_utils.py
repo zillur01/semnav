@@ -14,6 +14,7 @@ def build_intrinsic_matrix():
         "cx": 1.0,
         "cy": 1.0
     }
+intrinsics = build_intrinsic_matrix()
 
 def get_world_camera(r, t):
     rotation = quaternion.as_rotation_matrix(r)
@@ -59,7 +60,7 @@ def decode_depth_image(depth_normalized, min_depth, max_depth):
     
     return actual_depth
 
-def project_pixel_to_local_frame(u, v, depth, intrinsics, pose):
+def project_pixel_to_local_frame(u, v, depth, pose):
     """
     u, v: Pixel coordinates of the door pillar
     depth: Depth value at (u, v) from depth image
@@ -106,7 +107,7 @@ def filter_doors_with_depth(door_mask, depth_map, depth_threshold=4.0):
     with similar depths and horizontal proximity.
     """
     # 1. Clean up noise
-    kernel = np.ones((5,5), np.uint8)
+    kernel = np.ones((4,4), np.uint8)
     door_mask = cv2.morphologyEx(door_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
 
     # 2. Get connected components
@@ -195,9 +196,11 @@ def filter_doors_with_depth(door_mask, depth_map, depth_threshold=4.0):
 
 class DoorLandmarkTracker:
     def __init__(self, dist_threshold=0.8):
-        self.registered_doors = []  # List of tuples: (point_left, point_right)
+        self.registered_doors_ground = []  # List of tuples: (point_left, point_right)
+        self.registered_doors_top = []
         self.dist_threshold = dist_threshold
         self.last_world_pos = None
+        self.floor_threshold = -1.0
 
     def get_door_pillars(self, semantic_mask, depth_img):
         # 1. Identify all 'door' pixel indices (assuming label is 5)
@@ -216,18 +219,27 @@ class DoorLandmarkTracker:
         # using your camera intrinsics and robot pose.
         return (u_min, v_min, depth_img[v_min, u_min]), (u_max, v_max, depth_img[v_max, u_max])
 
-    def add_door_landmark(self, p1, p2):
+    def add_door_landmark(self, p1, p2, agent_translation):
         # Convert to numpy for math
         p1, p2 = np.array([p1[0], p1[2]]), np.array([p2[0], p2[2]])  # Use X and Z for ground plane
         midpoint = (p1 + p2) / 2
 
+        if agent_translation[1] < self.floor_threshold:
         # Check if this door already exists in memory
-        for existing_p1, existing_p2 in self.registered_doors:
-            existing_midpoint = (np.array(existing_p1) + np.array(existing_p2)) / 2
-            if np.linalg.norm(midpoint - existing_midpoint) < self.dist_threshold:
-                return False 
+            for existing_p1, existing_p2 in self.registered_doors_ground:
+                existing_midpoint = (np.array(existing_p1) + np.array(existing_p2)) / 2
+                if np.linalg.norm(midpoint - existing_midpoint) < self.dist_threshold:
+                    return False 
+            self.registered_doors_ground.append((p1, p2))
+        else:
+        # Check if this door already exists in memory
+            for existing_p1, existing_p2 in self.registered_doors_top:
+                existing_midpoint = (np.array(existing_p1) + np.array(existing_p2)) / 2
+                if np.linalg.norm(midpoint - existing_midpoint) < self.dist_threshold:
+                    return False 
+            self.registered_doors_top.append((p1, p2))
 
-        self.registered_doors.append((p1, p2))
+
         return True 
     
     def check_door_crossing(self, current_translation):
@@ -252,14 +264,24 @@ class DoorLandmarkTracker:
         B = current_pos_2d
         crossed_door_idx = None
 
-        for idx, (p1, p2) in enumerate(self.registered_doors):
-            # p1 and p2 are world coordinates [x, y, z]
-            C = np.array([p1[0], p1[1]])
-            D = np.array([p2[0], p2[1]])
+        if current_translation[1] < self.floor_threshold:
+            for idx, (p1, p2) in enumerate(self.registered_doors_ground):
+                # p1 and p2 are world coordinates [x, y, z]
+                C = np.array([p1[0], p1[1]])
+                D = np.array([p2[0], p2[1]])
 
-            if self._intersect(A, B, C, D):
-                crossed_door_idx = idx
-                break 
+                if self._intersect(A, B, C, D):
+                    crossed_door_idx = idx
+                    break 
+        else:
+            for idx, (p1, p2) in enumerate(self.registered_doors_top):
+                # p1 and p2 are world coordinates [x, y, z]
+                C = np.array([p1[0], p1[1]])
+                D = np.array([p2[0], p2[1]])
+
+                if self._intersect(A, B, C, D):
+                    crossed_door_idx = idx
+                    break 
 
         self.last_world_pos = current_pos_2d
         return crossed_door_idx
@@ -270,4 +292,6 @@ class DoorLandmarkTracker:
         return (ccw(A, C, D) != ccw(B, C, D)) and (ccw(A, B, C) != ccw(A, B, D))
     
     def reset(self):
-        self.registered_doors = []
+        self.registered_doors_ground = []
+        self.registered_doors_top = []
+        self.last_world_pos = None

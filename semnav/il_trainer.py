@@ -672,17 +672,17 @@ class ILEnvDDPTrainer(PPOTrainer):
                     plt.title('Result Mask')
                     plt.imshow(result_mask, cmap='gray')
                     plt.axis('off')
-                    '''                
+                    '''               
                     # Process frame in the tracker
                     #door_image = detect_doors(observations[i]['rgb'])
                     
                     pillars = tracker_list[i].get_door_pillars(result_mask, depth_image)
                     if pillars:
                         world_camera = get_world_camera(depth_rotations[i], depth_positions[i])
-                        p_left_local = project_pixel_to_local_frame(*pillars[0], world_camera)
-                        p_right_local = project_pixel_to_local_frame(*pillars[1], world_camera)
+                        p_left_global = project_pixel_to_local_frame(*pillars[0], world_camera)
+                        p_right_global = project_pixel_to_local_frame(*pillars[1], world_camera)
 
-                        if tracker_list[i].add_door_landmark(p_left_local, p_right_local):
+                        if tracker_list[i].add_door_landmark(p_left_global, p_right_global, agent_positions[i]):
                             print("New doorway registered in map.")
                     door_idx = tracker_list[i].check_door_crossing(agent_positions[i])
                     if door_idx is not None:
@@ -732,6 +732,7 @@ class ILEnvDDPTrainer(PPOTrainer):
                     # episode continues
                     elif len(self.config.VIDEO_OPTION) > 0:
                         # TODO move normalization / channel changing out of the policy and undo it here
+                        del batch['depth']
                         frame = observations_to_image(
                             {k: v[i] for k, v in batch.items()}, infos[i]
                         )
