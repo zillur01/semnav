@@ -552,7 +552,6 @@ class ILEnvDDPTrainer(PPOTrainer):
             self.actor_critic.eval()
             steps_count = [0 for _ in range(self.envs.num_envs)]
             #image_history = [deque(maxlen=3) for _ in range(self.envs.num_envs)]
-            tracker_list = [DoorLandmarkTracker() for _ in range(self.envs.num_envs)]
             room_manager_list = [RoomManager() for _ in range(self.envs.num_envs)]
             while (
                 len(stats_episodes) < number_of_eval_episodes
@@ -658,17 +657,17 @@ class ILEnvDDPTrainer(PPOTrainer):
                     plt.imshow(result_mask, cmap='gray')
                     plt.axis('off')
                     '''  
-                    door_idx = tracker_list[i].detect_room_transition(observations[i]['semantic'], observations[i]['depth'],
-                                                                      depth_rotations[i], depth_positions[i], agent_positions[i])
-                    if door_idx:
-                        print("Doorway crossed")
-                    room_manager_list[i].update(agent_positions[i], observations[i]['semantic'], door_idx)          
+                    scene_id = current_episodes[i].scene_id
+                    episode_id = current_episodes[i].episode_id
+                    room_id = room_manager_list[i].step(observations[i]['semantic'], observations[i]['depth'],
+                                                        depth_rotations[i], depth_positions[i], agent_positions[i])
+                    rgb = cv2.putText(batch['rgb'].cpu().numpy()[i], f'Room ID: {room_id}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=(255, 0, 0), thickness=2)
+                    batch['rgb'][i] = torch.tensor(rgb, device=self.device)
                     # episode ended
                     if not not_done_masks[i].item():
                         print(f"Current scene id: {current_episodes[i].scene_id}")
                         print(f"Number of steps take to end the episode {current_episodes[i].episode_id}: {steps_count[i]}")
-                        tracker_list[i].reset()
-
+                        room_manager_list[i].reset()
                         pbar.update()
                         episode_stats = {
                             "reward": current_episode_reward[i].item(),

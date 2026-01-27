@@ -347,43 +347,148 @@ class RoomManager:
             "ground": {},
             "top": {}
         }
+        self.room_dist_threshold = 1.0  # meters
         self.current_floor = None
         self.current_room_id = None
         self.is_initialized = False
 
         # Topological Map: door_id -> set of (floor_name, room_id)
         self.connectivity = {}
+        
+        # Track which door was used to enter each room: (floor, room_id) -> door_id
+        self.room_entry_doors = {}
+        self.door_tracker = DoorLandmarkTracker()
 
     def _get_floor_name(self, y_coord):
         """Determine floor based on Y-axis (y down: negative is ground, positive is top)."""
         return "top" if y_coord > -1.0 else "ground"
+    
+    def _compute_semantic_signature(self, semantic_map):
+        """Extract semantic category distribution as room fingerprint."""
+        if semantic_map is None:
+            return None
+        
+        if semantic_map.ndim == 3:
+            semantic_map = semantic_map[:, :, 0]
+        
+        # Count unique categories (excluding background/walls)
+        unique, counts = np.unique(semantic_map.flatten(), return_counts=True)
+        total = counts.sum()
+        
+        # Create normalized histogram (category -> frequency)
+        signature = {}
+        for cat, count in zip(unique, counts):
+            if cat > 0:  # Exclude background
+                signature[int(cat)] = float(count) / total
+        
+        return signature
+    
+    def _compare_semantic_signatures(self, sig1, sig2):
+        """Compare two semantic signatures using cosine similarity."""
+        if sig1 is None or sig2 is None:
+            return 0.0
+        
+        all_keys = set(sig1.keys()) | set(sig2.keys())
+        if not all_keys:
+            return 0.0
+        
+        # Compute cosine similarity
+        dot_product = sum(sig1.get(k, 0) * sig2.get(k, 0) for k in all_keys)
+        norm1 = np.sqrt(sum(v**2 for v in sig1.values()))
+        norm2 = np.sqrt(sum(v**2 for v in sig2.values()))
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        
+        return dot_product / (norm1 * norm2)
 
-    def _initialize_first_room(self, pos):
+    def _initialize_first_room(self, pos, semantic_map=None):
         """Sets up the first room based on the robot's actual starting position."""
         self.current_floor = self._get_floor_name(pos[1])
         self.current_room_id = 0
-        self.floors[self.current_floor][0] = {"path": [], "doors": set()}
+        self.floors[self.current_floor][0] = {
+            "path": [], 
+            "doors": set(),
+            "semantic_signatures": [],  # List of semantic fingerprints
+            "center": None  # Will be computed from path
+        }
+        if semantic_map is not None:
+            sig = self._compute_semantic_signature(semantic_map)
+            if sig:
+                self.floors[self.current_floor][0]["semantic_signatures"].append(sig)
         self.is_initialized = True
         print(f"INITIALIZED: Started on {self.current_floor} floor in Room 0")
+    
+    def reset(self):
+        """Complete reset after episode ends (clears all data)."""
+        print(f"\n=== EPISODE RESET ===")
+        self.floors = {"ground": {}, "top": {}}
+        self.connectivity = {}
+        self.room_entry_doors = {}
+        self.current_floor = None
+        self.current_room_id = None
+        self.is_initialized = False
+        self.door_tracker.reset()
+        print("  -> All map data cleared")
 
-    def recognize_room_from_path(self, current_pos, floor_name, dist_threshold=1.0):
-        best_room = None
-        min_dist = dist_threshold
+    def recognize_room_from_path(self, current_pos, floor_name, current_semantic=None, entry_door_id=None):
+        """Multi-criteria room matching: topology, geometry, and semantics."""
+        candidates = []
 
         for rid, data in self.floors[floor_name].items():
             path = data["path"]
-            if not path: continue
+            if not path:
+                continue
 
+            # Criterion 1: Geometric distance to room center/path
             path_arr = np.array(path)
-            path_arr = path_arr[:-3] if len(path_arr) > 2 else path_arr
-            distances = np.linalg.norm(path_arr - current_pos, axis=1)
-            closest_pt_dist = np.min(distances)
-
-            if closest_pt_dist < min_dist:
-                min_dist = closest_pt_dist
-                best_room = rid
-
-        return best_room
+            
+            # Use room center if available (more stable than closest path point)
+            if data.get("center") is not None:
+                center_dist = np.linalg.norm(data["center"] - current_pos)
+            else:
+                # Fallback to closest path point
+                distances = np.linalg.norm(path_arr - current_pos, axis=1)
+                center_dist = np.min(distances)
+            
+            # Criterion 2: Door connectivity check
+            # If this room shares a door with our previous room, it's likely adjacent (not the same)
+            door_match_score = 0.0
+            if entry_door_id is not None and entry_door_id in data["doors"]:
+                door_match_score = 1.0  # Strong indicator this could be the room
+            
+            # Criterion 3: Semantic similarity
+            semantic_score = 0.0
+            if current_semantic is not None and data.get("semantic_signatures"):
+                # Compare with average of stored signatures
+                scores = [self._compare_semantic_signatures(current_semantic, sig) 
+                         for sig in data["semantic_signatures"]]
+                semantic_score = np.mean(scores) if scores else 0.0
+            
+            # Combined scoring
+            # Only consider if within reasonable distance
+            if center_dist < self.room_dist_threshold * 2:  # Wider initial filter
+                candidates.append({
+                    'room_id': rid,
+                    'dist': center_dist,
+                    'door_match': door_match_score,
+                    'semantic': semantic_score,
+                    'total_score': door_match_score * 2.0 + semantic_score * 1.5 - center_dist * 0.5
+                })
+        
+        if not candidates:
+            return None
+        
+        # Return best match only if score is strong enough
+        candidates.sort(key=lambda x: x['total_score'], reverse=True)
+        best = candidates[0]
+        
+        # Require strong evidence: good door match OR (close distance AND good semantic match)
+        if best['door_match'] > 0.5 or (best['dist'] < self.room_dist_threshold and best['semantic'] > 0.6):
+            print(f"  -> Matched Room {best['room_id']}: dist={best['dist']:.2f}, door={best['door_match']}, semantic={best['semantic']:.2f}")
+            return best['room_id']
+        
+        return None
 
     def merge_rooms(self, floor_name, room_to_keep, room_to_remove):
         if room_to_keep == room_to_remove:
@@ -407,13 +512,26 @@ class RoomManager:
         if self.current_room_id == room_to_remove:
             self.current_room_id = room_to_keep
 
+    def step(self, 
+             semantic_image, 
+             depth_image, 
+             depth_rotation, 
+             depth_position, 
+             agent_position):
+        
+        door_idx = self.door_tracker.detect_room_transition(
+            semantic_image, depth_image, depth_rotation, depth_position, agent_position)
+        self.update(agent_position, semantic_image, door_idx)
+        return self.current_room_id
+
     def update(self, robot_pos, semantic_map=None, door_id=None):
             """
-            Updates map with fixed floor-transition logic.
+            Updates map with door-centric topology and semantic tracking.
             """
-            # 0. Lazy Initialization
+            # 0. Lazy Initialization (fallback for first episode)
             if not self.is_initialized:
-                self._initialize_first_room(robot_pos)
+                self._initialize_first_room(robot_pos, semantic_map)
+                return
 
             # 1. Check for Stairs
             if semantic_map is not None:
@@ -424,73 +542,101 @@ class RoomManager:
                 if center_semantic == self.stairs_id:
                     return
 
-            # 2. Handle Floor Change and Door Crossing carefully
+            # 2. Handle Floor Change and Door Crossing
             new_floor_name = self._get_floor_name(robot_pos[1])
-            
-            # We capture the state BEFORE we potentially update the current floor/room
             old_floor = self.current_floor
             old_room_id = self.current_room_id
 
             if door_id is not None:
-                # Check if we already know what's on the other side of this door
+                print(f"\n=== DOOR CROSSING: Door {door_id} from Room {old_room_id} ===")
+                
+                # STRATEGY 1: Check topology - have we crossed this door from this room before?
                 target_info = self._find_room_beyond_door(old_floor, old_room_id, door_id)
 
-                if target_info is None:
-                    # Search the NEW floor for an existing room path
-                    found_id = self.recognize_room_from_path(robot_pos, new_floor_name)
+                if target_info is not None:
+                    # We know exactly where this door leads - use that knowledge!
+                    _, self.current_room_id = target_info
+                    self.current_floor = new_floor_name
+                    print(f"  -> Known door connection: entering Room {self.current_room_id}")
+                else:
+                    # STRATEGY 2: Unknown door - check if destination matches existing room
+                    current_semantic = self._compute_semantic_signature(semantic_map)
+                    found_id = self.recognize_room_from_path(
+                        robot_pos, new_floor_name, 
+                        current_semantic=current_semantic,
+                        entry_door_id=door_id
+                    )
                     
                     if found_id is None:
-                        # Create a brand new room on the new floor
+                        # Create NEW room
                         all_ids = []
                         for f in self.floors.values():
                             all_ids.extend(f.keys())
                         
                         new_room_id = (max(all_ids) + 1) if all_ids else 0
-                        self.floors[new_floor_name][new_room_id] = {"path": [], "doors": {door_id}}
+                        self.floors[new_floor_name][new_room_id] = {
+                            "path": [], 
+                            "doors": {door_id},
+                            "semantic_signatures": [],
+                            "center": None
+                        }
                         self.current_room_id = new_room_id
+                        self.room_entry_doors[(new_floor_name, new_room_id)] = door_id
+                        print(f"  -> Created NEW Room {new_room_id}")
                     else:
+                        # Found matching existing room
                         self.current_room_id = found_id
-                else:
-                    # Transition to existing known room
-                    _, self.current_room_id = target_info
+                        print(f"  -> Recognized existing Room {found_id}")
 
-                # Now safe to update current floor
+                # Update current floor
                 self.current_floor = new_floor_name
 
-                # Update Topology
+                # Update Topology (door connects two rooms)
                 if door_id not in self.connectivity: 
                     self.connectivity[door_id] = set()
                 
                 self.connectivity[door_id].add((old_floor, old_room_id))
                 self.connectivity[door_id].add((self.current_floor, self.current_room_id))
 
-                # Update Door Lists (Using old_floor and old_room_id which are now guaranteed to exist)
-                self.floors[old_floor][old_room_id]["doors"].add(door_id)
-                self.floors[self.current_floor][self.current_room_id]["doors"].add(door_id)
+                # Update door lists
+                if old_room_id in self.floors[old_floor]:
+                    self.floors[old_floor][old_room_id]["doors"].add(door_id)
+                if self.current_room_id in self.floors[self.current_floor]:
+                    self.floors[self.current_floor][self.current_room_id]["doors"].add(door_id)
             
             else:
-                # Just a standard floor check if no door was crossed (e.g., stairs)
+                # No door crossing - just update floor if changed (e.g., stairs)
                 self.current_floor = new_floor_name
 
-            # 4. Record Trajectory & Merge Check
+            # 3. Record Trajectory & Update Room Data
             if self.current_room_id in self.floors[self.current_floor]:
                 floor_data = self.floors[self.current_floor]
-                current_path = floor_data[self.current_room_id]["path"]
+                room_data = floor_data[self.current_room_id]
+                current_path = room_data["path"]
                 
-                if not current_path or np.linalg.norm(np.array(current_path[-1]) - robot_pos) > 0.5:
+                # Add position to path
+                if not current_path or np.linalg.norm(np.array(current_path[-1]) - robot_pos) > 0.2:
                     current_path.append(robot_pos.tolist())
+                    
+                    # Update room center
+                    if len(current_path) > 5:
+                        path_arr = np.array(current_path)
+                        room_data["center"] = np.mean(path_arr, axis=0)
+                
+                # Add semantic signature periodically
+                if semantic_map is not None and len(current_path) % 10 == 0:
+                    sig = self._compute_semantic_signature(semantic_map)
+                    if sig and len(room_data["semantic_signatures"]) < 20:  # Limit storage
+                        room_data["semantic_signatures"].append(sig)
+            
+            print(f"UPDATED: Floor={self.current_floor}, Room={self.current_room_id}, Doors={self.floors[self.current_floor][self.current_room_id]['doors']}")
 
-                    # Check for overlap
-                    other_id = self._check_path_overlap(robot_pos, self.current_room_id, self.current_floor)
-                    if other_id is not None:
-                        self.merge_rooms(self.current_floor, other_id, self.current_room_id)
-
-    def _check_path_overlap(self, pos, current_rid, floor_name, threshold=1.0):
+    def _check_path_overlap(self, pos, current_rid, floor_name):
         for rid, data in self.floors[floor_name].items():
             if rid == current_rid or not data["path"]: continue
             path_arr = np.array(data["path"])
             dist = np.min(np.linalg.norm(path_arr - pos, axis=1))
-            if dist < threshold: return rid
+            if dist < self.room_dist_threshold: return rid
         return None
 
     def _find_room_beyond_door(self, floor_name, room_id, door_id):
